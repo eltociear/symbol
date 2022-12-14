@@ -12,7 +12,7 @@ class ParserState(Enum):
 def parse_code(infile):
 	"""Parses sdk/python/examples/docs/__main__.py, creates function name -> code mapping."""
 
-	func_pattern = re.compile(r'(async )?def (?P<func_name>\w+)')
+	func_pattern = re.compile(r'(async )?(def|class) (?P<func_name>\w+)')
 	parsed_code = {}
 
 	# this is super _crude_, it only handles func starting at the beginning of line

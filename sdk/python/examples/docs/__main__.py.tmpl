@@ -16,7 +16,7 @@ from symbolchain.Bip32 import Bip32
 from symbolchain.BufferWriter import BufferWriter
 from symbolchain.CryptoTypes import Hash256, PrivateKey, PublicKey
 from symbolchain.facade.SymbolFacade import SymbolFacade
-from symbolchain.sc import Amount
+from symbolchain.sc import Amount, BlockFactory, Height
 from symbolchain.symbol.IdGenerator import generate_mosaic_alias_id, generate_mosaic_id, generate_namespace_id
 from symbolchain.symbol.Merkle import MerklePart, deserialize_patricia_tree_nodes, prove_merkle, prove_patricia_merkle
 from symbolchain.symbol.MessageEncoder import MessageEncoder
@@ -274,6 +274,81 @@ async def get_network_finalized_height():
 			height = int(response_json['latestFinalizedBlock']['height'])
 			print(f'finalized height: {height}')
 			return height
+
+# endregion
+
+
+# region block files
+
+class BlockDigester:
+	OBJECTS_PER_STORAGE_DIRECTORY = 10_000
+
+	def __init__(self, data_path, file_database_batch_size):
+		self.data_path = data_path
+		self.file_database_batch_size = file_database_batch_size
+
+		# used to cache last opened batch file
+		self.batch_file_path = None
+		self.batch_file_data = None
+		self.block_offsets = None
+
+		self.end = 0
+
+	def get_chain_height(self):
+		"""Gets chain height."""
+
+		with open(self.data_path / 'index.dat', 'rb') as input_file:
+			data = input_file.read()
+
+		return Height.deserialize(data)
+
+	def parse_offsets(self, ignore_first_zero_offset=False):
+		"""There are absolute offsets to blocks at the beginning of the file, parse and store them."""
+
+		buffer = memoryview(self.batch_file_data)
+
+		self.block_offsets = []
+		for i in range(self.file_database_batch_size):
+			offset = int.from_bytes(buffer[:8], byteorder='little', signed=False)
+
+			# if this is very first batch file it will have 0 as a first entry
+			# for any other batch file, 0 means all offsets have been read
+			if not offset and not ignore_first_zero_offset and i == 0:
+				break
+
+			self.block_offsets.append(offset)
+			buffer = buffer[8:]
+
+	def read_batchfile(self, height, force_reread):
+		"""Open proper block batch file and parse offsets."""
+
+		group_id = (height // self.file_database_batch_size) * self.file_database_batch_size
+
+		directory = f'{group_id // self.OBJECTS_PER_STORAGE_DIRECTORY:05}'
+		name = f'{group_id % self.OBJECTS_PER_STORAGE_DIRECTORY:05}.dat'
+
+		file_path = self.data_path / directory / name
+
+		if self.batch_file_path == file_path and not force_reread:
+			return
+
+		with file_path.open(mode='rb', buffering=0) as input_file:
+			self.batch_file_data = input_file.read()
+			self.batch_file_path = file_path
+
+			self.parse_offsets(group_id == 0)
+
+	def get_block(self, height, force_reread=False):
+		"""Returns parsed block at height."""
+
+		self.read_batchfile(height, force_reread)
+
+		entry_in_batch = height % self.file_database_batch_size
+		if entry_in_batch >= len(self.block_offsets):
+			raise RuntimeError(f'block with given height ({height}) is not present in batch file')
+
+		offset = self.block_offsets[entry_in_batch]
+		return BlockFactory.deserialize(self.batch_file_data[offset:])
 
 # endregion
 
